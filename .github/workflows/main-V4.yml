@@ -3,14 +3,15 @@ name: Build Speed Run V7 - Kotlin Diagnostic
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Speed Run V7 + Show Kotlin Error
+    name: Build Speed Run V7 + Kotlin Diagnostic
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -20,81 +21,188 @@ jobs:
       PROJECT_ZIP: Speed-Run-V7-PRO-COMPILE-FIXED.zip
 
     steps:
+
+      # --------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # --------------------------------------------------
+      # 2. Java 17
+      # IMPORTANT:
+      # No Gradle cache here because the project is inside ZIP.
+      # --------------------------------------------------
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
+      # --------------------------------------------------
+      # 3. Verify exact Speed Run ZIP
+      # --------------------------------------------------
       - name: Verify exact Speed Run V7 source
         shell: bash
         run: |
           set -euo pipefail
+
           ZIP="$GITHUB_WORKSPACE/$PROJECT_ZIP"
+
+          echo "======================================"
+          echo "Checking Speed Run source"
+          echo "======================================"
 
           if [ ! -f "$ZIP" ]; then
             echo "::error::Required source '$PROJECT_ZIP' was not found."
-            echo "ZIP files in repository root:"
-            find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' | sort || true
+
+            echo ""
+            echo "ZIP files found in repository root:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 1 \
+              -type f \
+              -iname '*.zip' \
+              -printf '%f\n' \
+              | sort || true
+
             exit 1
           fi
 
-          unzip -t "$ZIP" >/dev/null
-          echo "Using exact source: $PROJECT_ZIP"
+          echo "Found: $PROJECT_ZIP"
 
+          echo ""
+          echo "Testing ZIP integrity..."
+
+          unzip -t "$ZIP" >/dev/null
+
+          echo "ZIP integrity: OK"
+
+      # --------------------------------------------------
+      # 4. Extract exact project
+      # --------------------------------------------------
       - name: Extract exact source
         shell: bash
         run: |
           set -euo pipefail
 
           rm -rf "$GITHUB_WORKSPACE/speedrun-project"
+
           mkdir -p "$GITHUB_WORKSPACE/speedrun-project"
 
-          unzip -q "$GITHUB_WORKSPACE/$PROJECT_ZIP" \
+          unzip -q \
+            "$GITHUB_WORKSPACE/$PROJECT_ZIP" \
             -d "$GITHUB_WORKSPACE/speedrun-project"
+
+          echo "======================================"
+          echo "Searching for Gradle project..."
+          echo "======================================"
 
           SETTINGS_FILE="$(
             find "$GITHUB_WORKSPACE/speedrun-project" \
               -type f \
-              \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) \
+              \( \
+                -name 'settings.gradle.kts' \
+                -o \
+                -name 'settings.gradle' \
+              \) \
               -not -path '*/.gradle/*' \
-              -print -quit
+              -print \
+              -quit
           )"
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::No Android Gradle project found inside $PROJECT_ZIP."
+            echo "::error::No Android Gradle project was found inside $PROJECT_ZIP."
+
+            echo ""
+            echo "Extracted files:"
+            find "$GITHUB_WORKSPACE/speedrun-project" \
+              -maxdepth 5 \
+              -type f \
+              | sort \
+              | head -200
+
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
 
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "Gradle project found:"
+          echo "$PROJECT_DIR"
+
+      # --------------------------------------------------
+      # 5. Validate project
+      # --------------------------------------------------
       - name: Validate Speed Run project
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "======================================"
+          echo "Validating Speed Run project"
+          echo "======================================"
+
+          test -f "$PROJECT_DIR/settings.gradle.kts" \
+            || test -f "$PROJECT_DIR/settings.gradle"
+
           test -f "$PROJECT_DIR/build.gradle.kts"
+
           test -f "$PROJECT_DIR/app/build.gradle.kts"
+
           test -f "$PROJECT_DIR/app/google-services.json"
+
           test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
           test -f "$PROJECT_DIR/app/src/main/java/com/speedrun/delivery/MainActivity.kt"
 
           APP="$PROJECT_DIR/app/build.gradle.kts"
+
           MAIN="$PROJECT_DIR/app/src/main/java/com/speedrun/delivery/MainActivity.kt"
 
-          grep -q 'applicationId = "com.speedrun.delivery"' "$APP"
-          grep -q 'namespace = "com.speedrun.delivery"' "$APP"
-          grep -q 'compileSdk = 36' "$APP"
-          grep -q 'package com.speedrun.delivery' "$MAIN"
+          echo ""
+          echo "Checking applicationId..."
 
-          echo "Source validation: PASSED"
+          grep -q \
+            'applicationId = "com.speedrun.delivery"' \
+            "$APP"
 
+          echo "applicationId: OK"
+
+          echo ""
+          echo "Checking namespace..."
+
+          grep -q \
+            'namespace = "com.speedrun.delivery"' \
+            "$APP"
+
+          echo "namespace: OK"
+
+          echo ""
+          echo "Checking compileSdk..."
+
+          grep -q \
+            'compileSdk = 36' \
+            "$APP"
+
+          echo "compileSdk 36: OK"
+
+          echo ""
+          echo "Checking MainActivity package..."
+
+          grep -q \
+            'package com.speedrun.delivery' \
+            "$MAIN"
+
+          echo "MainActivity package: OK"
+
+          echo ""
+          echo "Project validation: PASSED"
+
+      # --------------------------------------------------
+      # 6. Install Android SDK 36
+      # --------------------------------------------------
       - name: Install Android SDK 36
         shell: bash
         run: |
@@ -102,35 +210,87 @@ jobs:
 
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
-          [ -x "$SDKMANAGER" ] || \
+          if [ ! -x "$SDKMANAGER" ]; then
             SDKMANAGER="$ANDROID_HOME/cmdline-tools/bin/sdkmanager"
+          fi
 
-          [ -x "$SDKMANAGER" ] || {
-            echo "::error::Android sdkmanager not found."
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::Android sdkmanager was not found."
             exit 1
-          }
+          fi
 
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          echo "Accepting Android SDK licenses..."
+
+          yes | "$SDKMANAGER" --licenses \
+            >/dev/null 2>&1 || true
+
+          echo "Installing Android 36..."
 
           "$SDKMANAGER" \
             "platforms;android-36" \
             "build-tools;36.0.0"
 
+          echo "Android SDK 36: READY"
+
+      # --------------------------------------------------
+      # 7. Setup Gradle
+      #
+      # No cache here either.
+      # --------------------------------------------------
       - name: Setup Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+          cache-disabled: true
 
+      # --------------------------------------------------
+      # 8. Show environment
+      # --------------------------------------------------
+      - name: Show build environment
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "BUILD ENVIRONMENT"
+          echo "======================================"
+
+          echo ""
+          echo "Java:"
+          java -version
+
+          echo ""
+          echo "Gradle:"
+          gradle --version
+
+          echo ""
+          echo "Project:"
+          pwd
+
+          echo ""
+          echo "Android SDK:"
+          echo "$ANDROID_HOME"
+
+      # --------------------------------------------------
+      # 9. Clean
+      # --------------------------------------------------
       - name: Clean project
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           gradle clean \
             --no-daemon \
             --console=plain
 
-      # Run Kotlin compilation ALONE first.
-      # This prevents the generic assembleDebug failure
-      # from hiding the actual compiler message.
+      # --------------------------------------------------
+      # 10. Diagnose Kotlin ONLY
+      #
+      # This is the important step.
+      # It exposes the REAL Kotlin compiler error.
+      # --------------------------------------------------
       - name: Diagnose Kotlin compilation
         id: kotlin_compile
         continue-on-error: true
@@ -141,45 +301,70 @@ jobs:
 
           LOG="$GITHUB_WORKSPACE/kotlin-compile.log"
 
-          echo "===== Kotlin compiler diagnostic =====" | tee "$LOG"
-          echo "Project: $PWD" | tee -a "$LOG"
-          echo "Gradle: $(gradle --version | head -n 1)" | tee -a "$LOG"
-          echo "======================================" | tee -a "$LOG"
+          echo "============================================" | tee "$LOG"
+          echo " SPEED RUN - KOTLIN COMPILER DIAGNOSTIC" | tee -a "$LOG"
+          echo "============================================" | tee -a "$LOG"
+
+          echo "" | tee -a "$LOG"
+
+          echo "Project:" | tee -a "$LOG"
+          echo "$PWD" | tee -a "$LOG"
+
+          echo "" | tee -a "$LOG"
+
+          echo "Running Kotlin compiler..." | tee -a "$LOG"
 
           gradle :app:compileDebugKotlin \
             --no-daemon \
             --stacktrace \
             --info \
             --console=plain \
-            --warning-mode all 2>&1 | tee -a "$LOG"
+            --warning-mode all \
+            2>&1 | tee -a "$LOG"
 
           EXIT_CODE=${PIPESTATUS[0]}
 
+          echo "" | tee -a "$LOG"
           echo "KOTLIN_EXIT_CODE=$EXIT_CODE" | tee -a "$LOG"
 
           exit "$EXIT_CODE"
 
-      - name: Print actionable Kotlin errors
+      # --------------------------------------------------
+      # 11. Print actual Kotlin error
+      # --------------------------------------------------
+      - name: Print actual Kotlin errors
         if: steps.kotlin_compile.outcome == 'failure'
         shell: bash
         run: |
           set +e
 
           echo ""
-          echo "================ ACTUAL KOTLIN ERROR ================"
+          echo "===================================================="
+          echo "           ACTUAL KOTLIN ERROR"
+          echo "===================================================="
+          echo ""
+
+          if [ ! -f "$GITHUB_WORKSPACE/kotlin-compile.log" ]; then
+            echo "::error::Kotlin diagnostic log was not created."
+            exit 1
+          fi
+
+          echo "Important compiler messages:"
           echo ""
 
           grep -nE \
-            '(^e: |\.kt:[0-9]+:[0-9]+|Unresolved reference|Type mismatch|Expecting|Cannot find|Overload resolution ambiguity|None of the following functions|Argument type mismatch|Conflicting overloads)' \
+            '(^e: |\.kt:[0-9]+:[0-9]+|Unresolved reference|Type mismatch|Expecting|Cannot find|Overload resolution ambiguity|None of the following functions|Argument type mismatch|Conflicting overloads|Syntax error)' \
             "$GITHUB_WORKSPACE/kotlin-compile.log" \
-            | tail -n 120 || true
+            | tail -n 150 || true
 
           echo ""
-          echo "============== END ACTUAL KOTLIN ERROR =============="
-          echo ""
+          echo "===================================================="
+          echo "             END KOTLIN ERROR"
+          echo "===================================================="
 
-          echo "Full diagnostic log is also saved as a GitHub artifact."
-
+      # --------------------------------------------------
+      # 12. Upload full Kotlin log
+      # --------------------------------------------------
       - name: Upload Kotlin diagnostic log
         if: always()
         uses: actions/upload-artifact@v4
@@ -188,22 +373,35 @@ jobs:
           path: kotlin-compile.log
           if-no-files-found: warn
 
+      # --------------------------------------------------
+      # 13. Stop if Kotlin failed
+      # --------------------------------------------------
       - name: Stop if Kotlin compilation failed
         if: steps.kotlin_compile.outcome == 'failure'
         shell: bash
         run: |
-          echo "::error::Kotlin compilation failed. See 'ACTUAL KOTLIN ERROR' above."
+          echo "::error::Kotlin compilation failed."
+          echo "::error::The actual compiler error was printed above."
           exit 1
 
+      # --------------------------------------------------
+      # 14. Build APK
+      # --------------------------------------------------
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           gradle :app:assembleDebug \
             --no-daemon \
             --stacktrace \
             --console=plain \
             --warning-mode all
 
+      # --------------------------------------------------
+      # 15. Verify APK
+      # --------------------------------------------------
       - name: Verify APK
         shell: bash
         run: |
@@ -211,11 +409,20 @@ jobs:
 
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
-          test -s "$APK"
+          if [ ! -s "$APK" ]; then
+            echo "::error::APK was not produced."
+            exit 1
+          fi
 
-          echo "APK created successfully:"
+          echo "======================================"
+          echo "APK BUILD SUCCESSFUL"
+          echo "======================================"
+
           ls -lh "$APK"
 
+      # --------------------------------------------------
+      # 16. Upload APK
+      # --------------------------------------------------
       - name: Upload Speed Run APK
         uses: actions/upload-artifact@v4
         with:

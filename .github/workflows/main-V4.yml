@@ -25,37 +25,92 @@ jobs:
         run: |
           set -e
 
-          ZIP_FILE="$(find . -maxdepth 2 -type f -name 'Speed-Run-Firebase-Base-V4.zip' -print -quit)"
+          ZIP_FILE="$(find . -maxdepth 2 -type f \
+            -name 'Speed-Run-Firebase-Base-V4.zip' \
+            -print -quit)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "Speed-Run-Firebase-Base-V4.zip not found"
+            echo "ERROR: Speed-Run-Firebase-Base-V4.zip not found"
             exit 1
           fi
 
-          echo "Using ZIP: $ZIP_FILE"
+          echo "Using: $ZIP_FILE"
 
+          rm -rf speedrun-project
           mkdir -p speedrun-project
+
           unzip -q "$ZIP_FILE" -d speedrun-project
 
-      - name: Fix Android build configuration
+          test -f speedrun-project/build.gradle.kts
+          test -f speedrun-project/app/build.gradle.kts
+
+          echo "Project extracted successfully."
+
+      - name: Normalize Android build configuration
         working-directory: speedrun-project
         shell: bash
         run: |
           set -e
 
-          echo "Changing compileSdk 37 -> 36"
-          sed -i 's/compileSdk = 37/compileSdk = 36/g' app/build.gradle.kts
+          echo "=== Fixing root Gradle configuration ==="
 
-          echo "Changing Compose BOM 2026.09.00 -> 2026.06.00"
-          sed -i 's/compose-bom:2026.09.00/compose-bom:2026.06.00/g' app/build.gradle.kts
+          sed -i \
+            's/com.android.application") version "9.1.1"/com.android.application") version "8.13.0"/' \
+            build.gradle.kts
 
-          echo "Final configuration:"
-          grep -E 'compileSdk|compose-bom' app/build.gradle.kts
+          sed -i \
+            's/org.jetbrains.kotlin.android") version "2.2.10"/org.jetbrains.kotlin.android") version "2.2.10"/' \
+            build.gradle.kts
+
+          sed -i \
+            's/org.jetbrains.kotlin.plugin.compose") version "2.2.10"/org.jetbrains.kotlin.plugin.compose") version "2.2.10"/' \
+            build.gradle.kts
+
+          echo "=== Fixing app configuration ==="
+
+          sed -i 's/compileSdk = 37/compileSdk = 36/g' \
+            app/build.gradle.kts
+
+          sed -i \
+            's/compose-bom:2026.09.00/compose-bom:2026.06.00/g' \
+            app/build.gradle.kts
+
+          echo "=== Verification ==="
+
+          grep -n 'com.android.application' build.gradle.kts
+          grep -n 'org.jetbrains.kotlin.android' build.gradle.kts
+          grep -n 'org.jetbrains.kotlin.plugin.compose' build.gradle.kts
+          grep -n 'compileSdk' app/build.gradle.kts
+          grep -n 'compose-bom' app/build.gradle.kts
+
+      - name: Verify no AGP 9 Kotlin conflict
+        working-directory: speedrun-project
+        shell: bash
+        run: |
+          set -e
+
+          if grep -q 'version "9.1.1"' build.gradle.kts; then
+            echo "ERROR: AGP 9.1.1 is still present."
+            exit 1
+          fi
+
+          if grep -q 'compileSdk = 37' app/build.gradle.kts; then
+            echo "ERROR: compileSdk 37 is still present."
+            exit 1
+          fi
+
+          if grep -q 'compose-bom:2026.09.00' app/build.gradle.kts; then
+            echo "ERROR: Compose BOM 2026.09.00 is still present."
+            exit 1
+          fi
+
+          echo "Configuration verification PASSED."
 
       - name: Accept Android licenses
         shell: bash
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --licenses >/dev/null 2>&1 || true
 
       - name: Install Android SDK 36
         shell: bash
@@ -66,14 +121,17 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      - name: Setup Gradle 9.3.1
+      - name: Setup Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '8.13'
 
       - name: Build Debug APK
         working-directory: speedrun-project
+        shell: bash
         run: |
+          set -e
+
           gradle :app:assembleDebug --no-daemon
 
       - name: Upload APK
@@ -81,3 +139,4 @@ jobs:
         with:
           name: speed-run-debug-apk
           path: speedrun-project/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

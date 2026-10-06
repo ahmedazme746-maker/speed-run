@@ -1,17 +1,27 @@
-name: Build Speed Run Android
+name: Build Speed Run PRO
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build Speed Run PRO APK
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      PROJECT_ZIP: Speed-Run-V7-PRO.zip
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -19,105 +29,106 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - name: Find and extract Speed Run V4 ZIP
+      - name: Verify the correct Speed Run source
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          ZIP_FILE="$(find . -maxdepth 2 -type f \
-            -name 'Speed-Run-Firebase-Base-V4.zip' \
-            -print -quit)"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Speed-Run-Firebase-Base-V4.zip not found"
+          if [ ! -f "$GITHUB_WORKSPACE/$PROJECT_ZIP" ]; then
+            echo "::error::Required source '$PROJECT_ZIP' was not found."
+            echo "::error::This workflow will NOT fall back to V4/V5/V6."
+            find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' | sort || true
             exit 1
           fi
 
-          echo "Using: $ZIP_FILE"
-
-          rm -rf speedrun-project
-          mkdir -p speedrun-project
-
-          unzip -q "$ZIP_FILE" -d speedrun-project
-
-          test -f speedrun-project/build.gradle.kts
-          test -f speedrun-project/app/build.gradle.kts
-
-          echo "Project extracted successfully."
-
-      - name: Normalize Android build configuration
-        working-directory: speedrun-project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=== Fixing root Gradle configuration ==="
-
-          sed -i \
-            's/com.android.application") version "9.1.1"/com.android.application") version "8.13.0"/' \
-            build.gradle.kts
-
-          sed -i \
-            's/org.jetbrains.kotlin.android") version "2.2.10"/org.jetbrains.kotlin.android") version "2.2.10"/' \
-            build.gradle.kts
-
-          sed -i \
-            's/org.jetbrains.kotlin.plugin.compose") version "2.2.10"/org.jetbrains.kotlin.plugin.compose") version "2.2.10"/' \
-            build.gradle.kts
-
-          echo "=== Fixing app configuration ==="
-
-          sed -i 's/compileSdk = 37/compileSdk = 36/g' \
-            app/build.gradle.kts
-
-          sed -i \
-            's/compose-bom:2026.09.00/compose-bom:2026.06.00/g' \
-            app/build.gradle.kts
-
-          echo "=== Verification ==="
-
-          grep -n 'com.android.application' build.gradle.kts
-          grep -n 'org.jetbrains.kotlin.android' build.gradle.kts
-          grep -n 'org.jetbrains.kotlin.plugin.compose' build.gradle.kts
-          grep -n 'compileSdk' app/build.gradle.kts
-          grep -n 'compose-bom' app/build.gradle.kts
-
-      - name: Verify no AGP 9 Kotlin conflict
-        working-directory: speedrun-project
-        shell: bash
-        run: |
-          set -e
-
-          if grep -q 'version "9.1.1"' build.gradle.kts; then
-            echo "ERROR: AGP 9.1.1 is still present."
+          if grep -Rqs "Speed-Run-Firebase-Base-V4.zip" \
+              "$GITHUB_WORKSPACE/.github/workflows" 2>/dev/null; then
+            echo "::error::Old V4 workflow is still present. Remove/replace it."
             exit 1
           fi
 
-          if grep -q 'compileSdk = 37' app/build.gradle.kts; then
-            echo "ERROR: compileSdk 37 is still present."
-            exit 1
-          fi
+          unzip -t "$GITHUB_WORKSPACE/$PROJECT_ZIP" >/dev/null
 
-          if grep -q 'compose-bom:2026.09.00' app/build.gradle.kts; then
-            echo "ERROR: Compose BOM 2026.09.00 is still present."
-            exit 1
-          fi
+          echo "Correct source verified: $PROJECT_ZIP"
 
-          echo "Configuration verification PASSED."
-
-      - name: Accept Android licenses
+      - name: Extract exact source
         shell: bash
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --licenses >/dev/null 2>&1 || true
+          set -euo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/speedrun-project"
+
+          mkdir -p "$GITHUB_WORKSPACE/speedrun-project"
+
+          unzip -q "$GITHUB_WORKSPACE/$PROJECT_ZIP" \
+            -d "$GITHUB_WORKSPACE/speedrun-project"
+
+          SETTINGS_FILE="$(
+            find "$GITHUB_WORKSPACE/speedrun-project" -type f \
+              \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) \
+              -not -path '*/.gradle/*' \
+              -print -quit
+          )"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::No Android Gradle project found inside $PROJECT_ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project directory: $PROJECT_DIR"
+
+      - name: Validate Speed Run project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$PROJECT_DIR/build.gradle.kts"
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+          test -f "$PROJECT_DIR/app/google-services.json"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_DIR/app/src/main/java/com/speedrun/delivery/MainActivity.kt"
+
+          APP="$PROJECT_DIR/app/build.gradle.kts"
+          MAIN="$PROJECT_DIR/app/src/main/java/com/speedrun/delivery/MainActivity.kt"
+          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          grep -q 'applicationId = "com.speedrun.delivery"' "$APP"
+          grep -q 'namespace = "com.speedrun.delivery"' "$APP"
+          grep -q 'compileSdk = 36' "$APP"
+          grep -q 'package com.speedrun.delivery' "$MAIN"
+          grep -q 'android:name=".MainActivity"' "$MANIFEST"
+
+          if grep -Rqs 'Speed-Run-Firebase-Base-V4' "$PROJECT_DIR"; then
+            echo "::error::Old V4 source detected. Refusing to build."
+            exit 1
+          fi
+
+          echo "Speed Run source validation: PASSED"
 
       - name: Install Android SDK 36
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          [ -x "$SDKMANAGER" ] || \
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/bin/sdkmanager"
+
+          [ -x "$SDKMANAGER" ] || {
+            echo "::error::Android sdkmanager not found."
+            exit 1
+          }
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
             "platforms;android-36" \
             "build-tools;36.0.0"
 
@@ -126,17 +137,38 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Build Debug APK
-        working-directory: speedrun-project
+      - name: Clean build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle clean --no-daemon
+
+      - name: Build exact Speed Run source
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          gradle :app:assembleDebug --no-daemon
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
-      - name: Upload APK
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK was not produced."
+
+            find "$PROJECT_DIR/app/build/outputs" \
+              -type f \
+              -print 2>/dev/null || true
+
+            exit 1
+          fi
+
+          ls -lh "$APK"
+
+          echo "APK verification: PASSED"
+
+      - name: Upload Speed Run APK
         uses: actions/upload-artifact@v4
         with:
-          name: speed-run-debug-apk
-          path: speedrun-project/app/build/outputs/apk/debug/app-debug.apk
+          name: speed-run-pro-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
